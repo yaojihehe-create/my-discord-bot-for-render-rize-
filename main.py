@@ -3,12 +3,14 @@ import os
 import random
 from flask import Flask
 from threading import Thread
+import time
 
-# Flaskのアプリケーションインスタンスを作成（gunicornが実行するWebサーバー）
+# Flaskのアプリケーションインスタンスを作成
 app = Flask(__name__) 
-# Botがすでに起動しているかを示すフラグ（ワーカーごとにチェック）
-# gunicornのワーカープロセスが立ち上がるときにFalseに初期化されます
-app.bot_started = False 
+
+# 【重要】Botの起動状態を追跡するためのグローバル変数
+# これを各プロセス（ワーカー）がチェックし、Botの多重起動を防ぎます。
+bot_start_attempted = False
 
 # -----------------
 # Discord Bot本体の起動関数
@@ -31,24 +33,27 @@ def run_discord_bot():
 
     @client.event
     async def on_ready():
-        global app
         print('---------------------------------')
         print(f'Botがログインしました: {client.user.name}')
         print('---------------------------------')
-        # Botが起動に成功したらフラグを立てる
-        app.bot_started = True 
 
     @client.event
     async def on_message(message):
         if message.author == client.user:
             return
+            
+        # メンションされた場合のみ応答
         if client.user.mentioned_in(message):
             response = random.choice(RANDOM_RESPONSES)
             await message.channel.send(f'{message.author.mention} {response}')
-            return 
-    
+            return # 応答したら必ずここで処理を終了
+
     if TOKEN:
-        client.run(TOKEN)
+        try:
+            # Botを実行
+            client.run(TOKEN)
+        except Exception as e:
+            print(f"Discord Bot 起動失敗: {e}")
     else:
         print("エラー: Botトークンが設定されていません。")
 
@@ -57,16 +62,20 @@ def run_discord_bot():
 # -----------------
 @app.route('/')
 def home():
-    # Botが起動していない場合のみ、Botを起動する
-    if not app.bot_started:
-        # WebアクセスをきっかけにBotを別スレッドで起動
-        # この処理はgunicornワーカー内で1回だけ実行されます
-        Thread(target=run_discord_bot).start()
-        return "Discord Bot is initializing..."
+    global bot_start_attempted
     
+    # 【重要】Botがまだ起動を試みていない場合のみ処理
+    if not bot_start_attempted:
+        print("Webアクセスを検知。Discord Botの起動を試みます...")
+        
+        # フラグを立て、他のプロセス/スレッドが重複起動しないようにする
+        bot_start_attempted = True
+        
+        # Botを別スレッドで起動
+        Thread(target=run_discord_bot).start()
+        
+        # Webサーバーは即座にレスポンスを返す
+        return "Discord Bot is initializing..."
+        
     # Botが起動済みの場合は、Renderのヘルスチェックに応答
     return "Bot is alive!"
-
-# ----------------------------------------------------
-# gunicornは 'app' インスタンスをWebサーバーとして起動します。
-# ----------------------------------------------------
